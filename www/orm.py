@@ -9,6 +9,12 @@ def log(sql, args=()):
 
 
 async def create_pool(loop, **kw):
+    """
+    创建数据库连接池
+    :param loop:
+    :param kw:键值对参数
+    :return:
+    """
     info('create database connection pool...')
     global __pool
     # 携程创建数据库，并设为全局变量
@@ -26,18 +32,16 @@ async def create_pool(loop, **kw):
     )
 
 
-'''
-查询数据库函数
-
-:param sql #sql语句
-:param args #参数
-:param size #查询数据条数
-
-:return rs #返回查询到记录
-'''
-
-
 async def select(sql, args, size=None):
+    """
+    查询数据库函数
+
+    :param sql #sql语句
+    :param args #参数
+    :param size #查询数据条数
+
+    :return rs #返回查询到记录
+    """
     log(sql, args)
     global __pool
     async with __pool.acquire() as conn:
@@ -53,18 +57,16 @@ async def select(sql, args, size=None):
         return rs
 
 
-'''
-INSERT、UPDATE、DELETE语句
-
-:param sql #sql语句
-:param args #参数
-:param size #查询数据条数
-
-:return rs #一个整数表示影响的行数
-'''
-
-
 async def execute(sql, args):
+    """
+    INSERT、UPDATE、DELETE语句
+
+    :param sql #sql语句
+    :param args #参数
+    :param size #查询数据条数
+
+    :return rs #一个整数表示影响的行数
+    """
     log(sql)
     async with __pool.acquire() as conn:
         try:
@@ -81,50 +83,75 @@ def create_args_string(num):
     L = []
     for n in range(num):
         L.append('?')
-    return ', '.join(L)
+    return ', '.join(L)  # etc： num =3 ,return = '?, ?, ?'
 
 
 class ModelMetaclass(type):
+    """
+    元类的主要目的就是为了当创建类时能够自动地改变类。
 
-    def __new__(cls, name, bases, attrs):
+    """
+
+    def __new__(mcs, name, bases, attrs):
+        """
+        :param name:类的名字 str
+        :param bases:类继承的父类集合 Tuple
+        :param attrs:类的方法集合
+        """
         # 排除Model类本身:
         if name == 'Model':
-            return type.__new__(cls, name, bases, attrs)
+            return type.__new__(mcs, name, bases, attrs)
         # 获取table名称:
         tableName = attrs.get('__table__', None) or name
+        # 日志：找到名为 name 的 model
         info('found model: %s (table: %s)' % (name, tableName))
         # 获取所有的Field和主键名:
         mappings = dict()
         fields = []
         primaryKey = None
+        # attrs.items 取决于 __new__ 传入的 attrs 参数
         for k, v in attrs.items():
+            # isinstance 类型函数：如果 v 和 Field 类型相同则返回 True ，不相同则 False
+            # 即检测是否为正确的数据类型输入，如果是通过mapping来建立类型映射，
             if isinstance(v, Field):
                 info('  found mapping: %s ==> %s' % (k, v))
                 mappings[k] = v
+                # 找到主键:
                 if v.primary_key:
-                    # 找到主键:
+                    # 如果发现有多个主键，报主键错误
                     if primaryKey:
                         raise RuntimeError('Duplicate primary key for field: %s' % k)
                     primaryKey = k
                 else:
+                    # 除主键外的表结构丢入field中
                     fields.append(k)
+        # 缺失主键报错
         if not primaryKey:
             raise RuntimeError('Primary key not found.')
+        # 如果 key 存在于字典中则将其移除并返回其值，否则返回 default
         for k in mappings.keys():
             attrs.pop(k)
         escaped_fields = list(map(lambda f: '`%s`' % f, fields))
         attrs['__mappings__'] = mappings  # 保存属性和列的映射关系
-        attrs['__table__'] = tableName
+        attrs['__table__'] = tableName  # table名
         attrs['__primary_key__'] = primaryKey  # 主键属性名
         attrs['__fields__'] = fields  # 除主键外的属性名
         # 构造默认的SELECT, INSERT, UPDATE和DELETE语句:
+
+        # 三个参数分别是主键，除主键其他需要查询的参数
         attrs['__select__'] = 'select `%s`, %s from `%s`' % (primaryKey, ', '.join(escaped_fields), tableName)
+
+        # 四个参数分别是表名，除主键其他需要查询的参数，主键，num：=参数数量的'?'占位符
         attrs['__insert__'] = 'insert into `%s` (%s, `%s`) values (%s)' % (
             tableName, ', '.join(escaped_fields), primaryKey, create_args_string(len(escaped_fields) + 1))
+
+        # 三个参数分别是表名，除主键其他需要查询的参数的name并转换格式为‘name=’，主键
         attrs['__update__'] = 'update `%s` set %s where `%s`=?' % (
             tableName, ', '.join(map(lambda f: '`%s`=?' % (mappings.get(f).name or f), fields)), primaryKey)
+
+        # 两个参数分别是表名，主键
         attrs['__delete__'] = 'delete from `%s` where `%s`=?' % (tableName, primaryKey)
-        return type.__new__(cls, name, bases, attrs)
+        return type.__new__(mcs, name, bases, attrs)
 
 
 class Model(dict, metaclass=ModelMetaclass):
@@ -132,37 +159,34 @@ class Model(dict, metaclass=ModelMetaclass):
     def __init__(self, **kw):
         super(Model, self).__init__(**kw)
 
-    '''
-    属性方法
-    '''
-
     def __getattr__(self, key):
         try:
             return self[key]
         except KeyError:
             raise AttributeError(r"'Model' object has no attribute '%s'" % key)
 
-    '''
-    设置属性
-    '''
-
     def __setattr__(self, key, value):
+        """
+        设置属性
+        :param key: 属性名
+        :param value: 属性值
+        :return:
+        """
         self[key] = value
 
-    '''
-        获取一个属性值
-        :param key #属性名
-    '''
-
     def getValue(self, key):
+        """
+        :param key: 属性名
+        :return: field的属性值
+        """
         return getattr(self, key, None)
 
-    '''
-        获取一个属性值，如果未赋值，则获取他对应的默认值
-        :param key #属性名
-    '''
-
     def getValueOrDefault(self, key):
+        """
+        获取一个属性值，如果未赋值，则获取他对应的默认值
+        :param key: 属性名
+        :return:返回有默认值的field的属性值
+        """
         value = getattr(self, key, None)
         if value is None:
             field = self.__mappings__[key]
@@ -171,6 +195,11 @@ class Model(dict, metaclass=ModelMetaclass):
                 debug('using default value for %s: %s' % (key, str(value)))
                 setattr(self, key, value)
         return value
+
+    @classmethod
+    async def findAll(cls, where=None, args=None, **kw):
+        # find objects by where clause
+        sql = [cls.__select__]
 
 
 class Field(object):
