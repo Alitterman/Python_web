@@ -108,13 +108,18 @@ if __name__ == '__main__':
     # l.add(1)
     # print(l)
 
-    def create_args_string(num):
-        L = []
-        for n in range(num):
-            L.append('?')
-        return ', '.join(L)
+    # def create_args_string(num):
+    #     L = []
+    #     for n in range(num):
+    #         L.append('?')
+    #     return ', '.join(L)
+    #
+    #
+    # print(create_args_string(3))
 
-
-    print(create_args_string(3))
+    x = {"name": "ren"}
+    name = x.get("name", None)
+    name_1 = x.get("char_name", "no name")
+    print(name, name_1, x)
 
     pass

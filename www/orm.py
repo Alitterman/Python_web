@@ -1,5 +1,7 @@
-import aiomysql
-from logging import info, debug
+import aiomysql, asyncio
+from logging import info, debug, warning
+
+import pymysql.err
 
 global __pool
 
@@ -45,16 +47,22 @@ async def select(sql, args, size=None):
     log(sql, args)
     global __pool
     async with __pool.acquire() as conn:
-        cur = await conn.cursor(aiomysql.DictCursor)  # 设置游标
-        await cur.execute(sql.replace('?', '%s'), args or ())  # 执行sql语句
-        if size:
-            rs = await cur.fetchmany(size)  # 查询指定条数数据
-        else:
-            rs = cur.fetchall()  # 查询所有数据
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            # cur = await conn.cursor(aiomysql.DictCursor)  # 设置游标
+            await cur.execute(sql.replace('?', '%s'), args or ())  # 执行sql语句
+            if size:
+                rs = await cur.fetchmany(size)  # 查询指定条数数据
+                if isinstance(rs, asyncio.Future):
+                    rs = rs.result()
 
-        await cur.close()  # 关闭游标
-        info(f'rows returned:{len(rs)}')
-        return rs
+            else:
+                rs = cur.fetchall()  # 查询所有数据
+                if isinstance(rs, asyncio.Future):
+                    rs = rs.result()
+
+            await cur.close()  # 关闭游标
+            info(f'rows returned:{len(rs)}')
+            return rs
 
 
 async def execute(sql, args):
@@ -89,7 +97,6 @@ def create_args_string(num):
 class ModelMetaclass(type):
     """
     元类的主要目的就是为了当创建类时能够自动地改变类。
-
     """
 
     def __new__(mcs, name, bases, attrs):
@@ -162,6 +169,7 @@ class Model(dict, metaclass=ModelMetaclass):
     def __getattr__(self, key):
         try:
             return self[key]
+            print(self.__primary_key__)
         except KeyError:
             raise AttributeError(r"'Model' object has no attribute '%s'" % key)
 
@@ -196,10 +204,102 @@ class Model(dict, metaclass=ModelMetaclass):
                 setattr(self, key, value)
         return value
 
+    def sql_handle(self, sql, kw, where=None, args=None):
+
+        return sql, args
+
     @classmethod
     async def findAll(cls, where=None, args=None, **kw):
         # find objects by where clause
         sql = [cls.__select__]
+
+        # sql, args = cls.sql_handle(sql, kw, where, args)
+        if where:
+            sql.append("where")
+            sql.append(where)
+        if args is None:
+            args = []
+        orderBy = kw.get('orderBy', None)
+        if orderBy:
+            sql.append("orderBy")
+            sql.append(orderBy)
+        limit = kw.get("limit", None)
+        if limit is not None:
+            sql.append("limit")
+            if isinstance(limit, int):
+                sql.append('?')
+                args.append(limit)
+            elif isinstance(limit, tuple) and len(limit) == 2:
+                sql.append("?, ?")
+                args.extend((limit))
+            else:
+                raise ValueError('Invalid limit value: %s' % str(limit))
+
+        log(sql, args)
+        rs = await select(' '.join(sql), args)
+
+        return [cls(**r) for r in rs]
+
+    @classmethod
+    async def findNumber(cls, selectField, where=None, args=None, **kw):
+        # 找到选中的数及位置
+        sql = ['select %s _num_ from `%s`' % (selectField, cls.__table__)]
+
+        # sql, args = cls.sql_handle(sql, kw, where, args)
+
+        if where:
+            sql.append("where")
+            sql.append(where)
+        if args is None:
+            args = []
+        orderBy = kw.get('orderBy', None)
+        if orderBy:
+            sql.append("orderBy")
+            sql.append(orderBy)
+        limit = kw.get("limit", None)
+        if limit is not None:
+            sql.append("limit")
+            if isinstance(limit, int):
+                sql.append('?')
+                args.append(limit)
+            elif isinstance(limit, tuple) and len(limit) == 2:
+                sql.append("?, ?")
+                args.extend((limit))
+            else:
+                raise ValueError('Invalid limit value: %s' % str(limit))
+        rs = await select(' '.join(sql), args, 1)
+        return [cls(**r) for r in rs]
+
+    @classmethod
+    async def find(cls, pk):
+        # 通过主键找对象
+        rs = await select('%s where `%s`=?' % (cls.__select__, cls.__primary_key__), [pk], 1)
+        if len(rs) == 0:
+            return None
+            return cls(**rs[0])
+
+    async def save(self):
+        args = list(map(self.getValueOrDefault, self.__fields__))
+        args.append(self.getValueOrDefault(self.__primary_key__))
+        try:
+            rows = await execute(self.__insert__, args)
+            if rows != 1:
+                warning('failed to insert record: affected rows: %s' % rows)
+        except pymysql.err.IntegrityError:
+            warning('主键参数输入错误')
+
+    async def update(self):
+        args = list(map(self.getValue, self.__fields__))
+        args.append(self.getValue(self.__primary_key__))
+        rows = await execute(self.__update__, args)
+        if rows != 1:
+            warning('failed to update by primary key: affected rows: %s' % rows)
+
+    async def remove(self):
+        args = [self.getValue(self.__primary_key__)]
+        rows = await execute(self.__delete__, args)
+        if rows != 1:
+            warning('failed to remove by primary key: affected rows: %s' % rows)
 
 
 class Field(object):
@@ -214,6 +314,12 @@ class Field(object):
         return '<%s, %s:%s>' % (self.__class__.__name__, self.column_type, self.name)
 
 
+'''
+include Fieldtype: String, Int, Boolean, Text
+
+'''
+
+
 class StringField(Field):
 
     def __init__(self, name=None, primary_key=False, default=None, ddl='varchar(100)'):
@@ -224,3 +330,18 @@ class IntegerField(Field):
 
     def __init__(self, name=None, primary_key=False, default=0):
         super().__init__(name, 'bigint', primary_key, default)
+
+
+class BooleanField(Field):
+    def __init__(self, name=None, default=False):
+        super().__init__(name, 'boolean', False, default)
+
+
+class TextField(Field):
+    def __init__(self, name=None, default=None):
+        super().__init__(name, 'text', False, default)
+
+
+class FloatField(Field):
+    def __init__(self, name=None, primary_key=False, default=0):
+        super().__init__(name, 'real', primary_key, default)
