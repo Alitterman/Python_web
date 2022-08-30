@@ -205,15 +205,6 @@ class Model(dict, metaclass=ModelMetaclass):
         return value
 
     def sql_handle(self, sql, kw, where=None, args=None):
-
-        return sql, args
-
-    @classmethod
-    async def findAll(cls, where=None, args=None, **kw):
-        # find objects by where clause
-        sql = [cls.__select__]
-
-        # sql, args = cls.sql_handle(sql, kw, where, args)
         if where:
             sql.append("where")
             sql.append(where)
@@ -234,6 +225,14 @@ class Model(dict, metaclass=ModelMetaclass):
                 args.extend((limit))
             else:
                 raise ValueError('Invalid limit value: %s' % str(limit))
+        return sql, args
+
+    @classmethod
+    async def findAll(cls, where=None, args=None, **kw):
+        # find objects by where clause
+        sql = [cls.__select__]
+
+        sql, args = cls.sql_handle(sql, kw, where, args)
 
         log(sql, args)
         rs = await select(' '.join(sql), args)
@@ -245,28 +244,8 @@ class Model(dict, metaclass=ModelMetaclass):
         # 找到选中的数及位置
         sql = ['select %s _num_ from `%s`' % (selectField, cls.__table__)]
 
-        # sql, args = cls.sql_handle(sql, kw, where, args)
+        sql, args = cls.sql_handle(sql, kw, where, args)
 
-        if where:
-            sql.append("where")
-            sql.append(where)
-        if args is None:
-            args = []
-        orderBy = kw.get('orderBy', None)
-        if orderBy:
-            sql.append("orderBy")
-            sql.append(orderBy)
-        limit = kw.get("limit", None)
-        if limit is not None:
-            sql.append("limit")
-            if isinstance(limit, int):
-                sql.append('?')
-                args.append(limit)
-            elif isinstance(limit, tuple) and len(limit) == 2:
-                sql.append("?, ?")
-                args.extend((limit))
-            else:
-                raise ValueError('Invalid limit value: %s' % str(limit))
         rs = await select(' '.join(sql), args, 1)
         return [cls(**r) for r in rs]
 
